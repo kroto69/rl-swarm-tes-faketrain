@@ -678,8 +678,8 @@ cat << "EOF"
     ██   ██ ███████       ███████  ███ ███  ██   ██ ██   ██ ██      ██ 
     
     From Gensyn Ambanode
-
 EOF
+
 
 if [ -n "$ORG_ID" ]; then
     python -m hivemind_exp.gsm8k.train_single_gpu \
