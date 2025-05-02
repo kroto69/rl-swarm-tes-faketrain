@@ -34,20 +34,117 @@ IDENTITY_PATH=${IDENTITY_PATH:-$DEFAULT_IDENTITY_PATH}
 SMALL_SWARM_CONTRACT="0x69C6e1D608ec64885E7b185d39b04B491a71768C"
 BIG_SWARM_CONTRACT="0x6947c6E196a48B77eFa9331EC1E3e45f3Ee5Fd58"
 
-# Will ignore any visible GPUs if set.
-CPU_ONLY=${CPU_ONLY:-""}
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+  if command -v apt &>/dev/null; then
+    echo -e "${CYAN}${BOLD}[✓] Debian/Ubuntu detected. Installing build-essential, gcc, g++...${NC}"
+    sudo apt update > /dev/null 2>&1
+    sudo apt install -y build-essential gcc g++ > /dev/null 2>&1
 
+  elif command -v yum &>/dev/null; then
+    echo -e "${CYAN}${BOLD}[✓] RHEL/CentOS detected. Installing Development Tools...${NC}"
+    sudo yum groupinstall -y "Development Tools" > /dev/null 2>&1
+    sudo yum install -y gcc gcc-c++ > /dev/null 2>&1
+
+  elif command -v pacman &>/dev/null; then
+    echo -e "${CYAN}${BOLD}[✓] Arch Linux detected. Installing base-devel...${NC}"
+    sudo pacman -Sy --noconfirm base-devel gcc > /dev/null 2>&1
+
+  else
+    echo -e "${RED}${BOLD}[✗] Linux detected but unsupported package manager.${NC}"
+    exit 1
+  fi
+
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+  echo -e "${CYAN}${BOLD}[✓] macOS detected. Installing Xcode Command Line Tools...${NC}"
+  xcode-select --install > /dev/null 2>&1
+
+else
+  echo -e "${RED}${BOLD}[✗] Unsupported OS: $OSTYPE${NC}"
+  exit 1
+fi
+
+if command -v gcc &>/dev/null; then
+  export CC=$(command -v gcc)
+  echo -e "${CYAN}${BOLD}[✓] Exported CC=$CC${NC}"
+else
+  echo -e "${RED}${BOLD}[✗] gcc not found. Please install it manually.${NC}"
+fi
 
 check_cuda_installation() {
-    echo -e "\n${CYAN}${BOLD}[✓] Checking CUDA and NVCC installation...${NC}"
+    echo -e "\n${CYAN}${BOLD}[✓] Checking GPU and CUDA installation...${NC}"
     
+    GPU_AVAILABLE=false
     CUDA_AVAILABLE=false
     NVCC_AVAILABLE=false
     
-    # Check if nvidia-smi is available
+    detect_gpu() {
+
+        if command -v lspci &> /dev/null; then
+            if lspci | grep -i nvidia &> /dev/null; then
+                echo -e "${GREEN}${BOLD}[✓] NVIDIA GPU detected (via lspci)${NC}"
+                return 0
+            elif lspci | grep -i "vga\|3d\|display" | grep -i "amd\|radeon\|ati" &> /dev/null; then
+                echo -e "${YELLOW}${BOLD}[!] AMD GPU detected (via lspci)${NC}"
+                echo -e "${YELLOW}${BOLD}[!] This script only supports NVIDIA GPUs for CUDA installation${NC}"
+                return 2 
+            fi
+            return 1 
+        fi
+        
+
+        if command -v nvidia-smi &> /dev/null; then
+            if nvidia-smi &> /dev/null; then
+                echo -e "${GREEN}${BOLD}[✓] NVIDIA GPU detected (via nvidia-smi)${NC}"
+                return 0
+            fi
+        fi
+        
+        if [ -d "/proc/driver/nvidia" ] || [ -d "/dev/nvidia0" ]; then
+            echo -e "${GREEN}${BOLD}[✓] NVIDIA GPU detected (via system directories)${NC}"
+            return 0
+        fi
+        
+        if [ -x "/usr/local/cuda/samples/bin/x86_64/linux/release/deviceQuery" ]; then
+            if /usr/local/cuda/samples/bin/x86_64/linux/release/deviceQuery | grep "Result = PASS" &> /dev/null; then
+                echo -e "${GREEN}${BOLD}[✓] NVIDIA GPU detected (via deviceQuery)${NC}"
+                return 0
+            fi
+        fi
+
+
+        if [ -d "/sys/class/gpu" ] || ls /sys/bus/pci/devices/*/vendor 2>/dev/null | xargs cat 2>/dev/null | grep -q "0x10de"; then
+            echo -e "${GREEN}${BOLD}[✓] NVIDIA GPU detected (via sysfs)${NC}"
+            return 0
+        fi
+
+
+        echo -e "${YELLOW}${BOLD}[!] No NVIDIA GPU detected with any detection method${NC}"
+        return 1
+    }
+    
+    detect_gpu
+    gpu_result=$?
+    
+    if [ $gpu_result -eq 0 ]; then
+        GPU_AVAILABLE=true
+    elif [ $gpu_result -eq 2 ]; then
+        echo -e "${YELLOW}${BOLD}[!] Proceeding with CPU-only mode${NC}"
+        CPU_ONLY="true"
+        return 0
+    else
+
+        echo -e "${YELLOW}${BOLD}[!] No NVIDIA GPU detected - using CPU-only mode${NC}"
+        echo -e "${YELLOW}${BOLD}[!] CUDA installation will be skipped${NC}"
+        CPU_ONLY="true"
+        return 0
+    fi
+
     if command -v nvidia-smi &> /dev/null; then
         echo -e "${GREEN}${BOLD}[✓] CUDA drivers detected (nvidia-smi found)${NC}"
         CUDA_AVAILABLE=true
+
+        echo -e "${CYAN}${BOLD}[✓] GPU information:${NC}"
+        nvidia-smi --query-gpu=name,driver_version,temperature.gpu,utilization.gpu --format=csv,noheader
     elif [ -d "/proc/driver/nvidia" ]; then
         echo -e "${GREEN}${BOLD}[✓] CUDA drivers detected (NVIDIA driver directory found)${NC}"
         CUDA_AVAILABLE=true
@@ -55,7 +152,6 @@ check_cuda_installation() {
         echo -e "${YELLOW}${BOLD}[!] CUDA drivers not detected${NC}"
     fi
     
-    # Check if nvcc is available
     if command -v nvcc &> /dev/null; then
         NVCC_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d',' -f1)
         echo -e "${GREEN}${BOLD}[✓] NVCC compiler detected (version $NVCC_VERSION)${NC}"
@@ -64,34 +160,23 @@ check_cuda_installation() {
         echo -e "${YELLOW}${BOLD}[!] NVCC compiler not detected${NC}"
     fi
     
-    # If either CUDA or NVCC is missing, offer to install
-    if [ "$CUDA_AVAILABLE" = false ] || [ "$NVCC_AVAILABLE" = false ]; then
-        echo -e "${YELLOW}${BOLD}[!] CUDA environment is not completely set up${NC}"
-        
-        # Ask if user wants to install CUDA
+    if [ "$GPU_AVAILABLE" = true ] && ([ "$CUDA_AVAILABLE" = false ] || [ "$NVCC_AVAILABLE" = false ]); then
+        echo -e "${YELLOW}${BOLD}[!] NVIDIA GPU is available but CUDA environment is not completely set up${NC}"
         read -p "Would you like to install CUDA and NVCC? [Y/n] " install_choice
         install_choice=${install_choice:-Y}
         
         if [[ $install_choice =~ ^[Yy]$ ]]; then
             echo -e "${CYAN}${BOLD}[✓] Downloading and running CUDA installation script from GitHub...${NC}"
-            
-            # Execute the CUDA installation script directly from GitHub
             bash <(curl -sSL https://raw.githubusercontent.com/zunxbt/gensyn-testnet/main/cuda.sh)
-            
-            # Check if installation was successful
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}${BOLD}[✓] CUDA installation script completed successfully${NC}"
-                
-                # Source the profile and bashrc to update environment variables
                 source ~/.profile 2>/dev/null || true
                 source ~/.bashrc 2>/dev/null || true
                 
-                # Reload environment variables for CUDA paths
                 if [ -f "/etc/profile.d/cuda.sh" ]; then
                     source /etc/profile.d/cuda.sh
                 fi
                 
-                # Add CUDA paths to current shell session if not already added
                 if [ -d "/usr/local/cuda/bin" ] && [[ ":$PATH:" != *":/usr/local/cuda/bin:"* ]]; then
                     export PATH="/usr/local/cuda/bin:$PATH"
                 fi
@@ -100,7 +185,6 @@ check_cuda_installation() {
                     export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
                 fi
                 
-                # Verify installation after running the script
                 if command -v nvcc &> /dev/null; then
                     NVCC_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d',' -f1)
                     echo -e "${GREEN}${BOLD}[✓] NVCC successfully installed (version $NVCC_VERSION)${NC}"
@@ -110,7 +194,6 @@ check_cuda_installation() {
                     echo -e "${YELLOW}${BOLD}[!] If you continue to have issues after this script completes, please restart your system${NC}"
                 fi
                 
-                # Display current CUDA version information
                 if command -v nvidia-smi &> /dev/null; then
                     echo -e "${CYAN}${BOLD}[✓] Current NVIDIA driver information:${NC}"
                     nvidia-smi --query-gpu=driver_version,name,temperature.gpu,utilization.gpu,utilization.memory --format=csv,noheader
@@ -118,12 +201,20 @@ check_cuda_installation() {
             else
                 echo -e "${RED}${BOLD}[✗] CUDA installation failed${NC}"
                 echo -e "${YELLOW}${BOLD}[!] Please try installing CUDA manually by following NVIDIA's installation guide${NC}"
+                echo -e "${YELLOW}${BOLD}[!] Proceeding with CPU-only mode${NC}"
+                CPU_ONLY="true"
             fi
         else
             echo -e "${YELLOW}${BOLD}[!] Proceeding without CUDA installation${NC}"
-            echo -e "${YELLOW}${BOLD}[!] Note: GPU acceleration will not be available${NC}"
+            echo -e "${YELLOW}${BOLD}[!] CPU-only mode will be used${NC}"
             CPU_ONLY="true"
         fi
+    elif [ "$GPU_AVAILABLE" = true ] && [ "$CUDA_AVAILABLE" = true ] && [ "$NVCC_AVAILABLE" = true ]; then
+        echo -e "${GREEN}${BOLD}[✓] GPU with CUDA environment properly configured${NC}"
+        CPU_ONLY="false"
+    else
+        echo -e "${YELLOW}${BOLD}[!] Using CPU-only mode${NC}"
+        CPU_ONLY="true"
     fi
     
     return 0
@@ -131,9 +222,17 @@ check_cuda_installation() {
 
 check_cuda_installation
 
+export CPU_ONLY
+
+if [ "$CPU_ONLY" = "true" ]; then
+    echo -e "\n${YELLOW}${BOLD}[✓] Running in CPU-only mode${NC}"
+else
+    echo -e "\n${GREEN}${BOLD}[✓] Running with GPU acceleration${NC}"
+fi
+
 while true; do
     # Prompt the user
-    echo -e "\033[36m\033[1mPlease select a swarm to join:\n[A] Math\n[B] Math Hard\033[0m"
+    echo -e "\n\033[36m\033[1mPlease select a swarm to join:\n[A] Math\n[B] Math Hard\033[0m"
     read -p "> " ab
     ab=${ab:-A}  # Default to "A" if Enter is pressed
 
@@ -162,17 +261,12 @@ done
 
 cleanup() {
     echo -e "${YELLOW}${BOLD}[✓] Shutting down processes...${NC}"
-    rm -r $ROOT_DIR/modal-login/temp-data/*.json 2> /dev/null || true
     kill $SERVER_PID 2>/dev/null || true
     kill $TUNNEL_PID 2>/dev/null || true
     exit 0
 }
 
 trap cleanup INT
-
-if ls "$HOME/rl-swarm/modal-login/temp-data/"*.json 1> /dev/null 2>&1; then
-  rm -r $HOME/rl-swarm/modal-login/temp-data/*.json 2> /dev/null || true
-fi
 
 sleep 2
 
@@ -320,6 +414,22 @@ else
         return 1
     }
 
+    install_localtunnel() {
+        if command -v lt >/dev/null 2>&1; then
+            echo -e "${GREEN}${BOLD}[✓] Localtunnel is already installed.${NC}"
+            return 0
+        fi
+        echo -e "\n${CYAN}${BOLD}[✓] Installing localtunnel...${NC}"
+        npm install -g localtunnel > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}${BOLD}[✓] Localtunnel installed successfully.${NC}"
+            return 0
+        else
+            echo -e "${RED}${BOLD}[✗] Failed to install localtunnel.${NC}"
+            return 1
+        fi
+    }
+
     install_cloudflared() {
         if command -v cloudflared >/dev/null 2>&1; then
             echo -e "${GREEN}${BOLD}[✓] Cloudflared is already installed.${NC}"
@@ -369,6 +479,30 @@ else
         rm ngrok.tgz
         echo -e "${GREEN}${BOLD}[✓] ngrok installed successfully.${NC}"
         return 0
+    }
+
+    try_localtunnel() {
+        echo -e "\n${CYAN}${BOLD}[✓] Trying localtunnel...${NC}"
+        if install_localtunnel; then
+            echo -e "\n${CYAN}${BOLD}[✓] Starting localtunnel on port $PORT...${NC}"
+            TUNNEL_TYPE="localtunnel"
+            lt --port $PORT > localtunnel_output.log 2>&1 &
+            TUNNEL_PID=$!
+            
+            sleep 5
+            URL=$(grep -o "https://[^ ]*" localtunnel_output.log | head -n1)
+            
+            if [ -n "$URL" ]; then
+                PASS=$(curl -s https://loca.lt/mytunnelpassword)
+                FORWARDING_URL="$URL"
+                echo -e "${GREEN}${BOLD}[✓] Success! Please visit this website : ${YELLOW}${BOLD}${URL}${GREEN}${BOLD} and then enter this password : ${YELLOW}${BOLD}${PASS}${GREEN}${BOLD} to access the website and then log in using your email.${NC}"
+                return 0
+            else
+                echo -e "${RED}${BOLD}[✗] Failed to get localtunnel URL.${NC}"
+                kill $TUNNEL_PID 2>/dev/null || true
+            fi
+        fi
+        return 1
     }
 
     try_cloudflared() {
@@ -445,6 +579,7 @@ else
                     echo -e "${RED}${BOLD}[✗] No token provided. Please enter a valid token.${NC}"
                     continue
                 fi
+                pkill -f ngrok || true
                 sleep 2
             
                 ngrok authtoken "$NGROK_TOKEN" 2>/dev/null
@@ -502,6 +637,10 @@ else
     }
 
     start_tunnel() {
+        if try_localtunnel; then
+            return 0
+        fi
+        
         if try_cloudflared; then
             return 0
         fi
@@ -561,6 +700,7 @@ else
     fi
 fi
 
+
 if [ -z "$CONFIG_PATH" ]; then
     if command -v nvidia-smi &> /dev/null || [ -d "/proc/driver/nvidia" ]; then
         echo -e "${GREEN}${BOLD}[✓] GPU detected${NC}"
@@ -611,74 +751,9 @@ else
 fi
 
 echo -e "\n${GREEN}${BOLD}[✓] Good luck in the swarm! Your training session is about to begin.\n${NC}"
-[ "$(uname)" = "Darwin" ] && sed -i '' -E 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)") || sed -i -E 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)")
-sleep 2
+[ "$(uname)" = "Darwin" ] && sed -i '' -E -e 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' -e '/startup_timeout: float = 120,/a\'$'\n''    bootstrap_timeout: float = 120,' -e '/anonymous_p2p = await cls\.create\(/a\'$'\n''        bootstrap_timeout=120,' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)") || sed -i -E -e 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' -e '/startup_timeout: float = 120,/a\    bootstrap_timeout: float = 120,' -e '/anonymous_p2p = await cls\.create\(/a\        bootstrap_timeout=120,' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)")
 
-echo -e "\033[38;5;224m"
-cat << "EOF"
-                                                                                                                          
-                                                                                                                          
-  :::::::::::::::::::::::::::;;;;;;::;X&&&&&&&&&&&&&&&&&&&&&&&&&&&$&&$$X$$$X++X&&&&&&&&&&&&&&&&&&&&&&&&&&X+;;;;;;;;;;;;;  
-  ::::::::::::::::::::;::;;+X$$$$$$XX$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$XXx+;++x&&&&&&&&&&&&&&&&&&&&&&&&&X+;;;;;;;;;;;;  
-  :::::::::::::::::::::::+$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$XXX&$XxX$$XXxx$$xx++xX$&&&$xx++++::;;;;;+++XX+;;;;;;;;;;;;  
-  :::::::::::::::::::;;;x$&&&&&&&&&&&&&&&&&&&&&&&&&&&$&&&&&Xx++;;xxx+;: ;X$XXXXXX+;+xxxx+;;++++..;+:....::;;+;;;;;;;;+xX  
-  :::::::::::::::::::::x$&&&&&&&&&&&&&&&&&&&&&&&&&&&$&&$XX$$&&XXX$$Xx+:.;xX+;;:;xXXXxXXXx+;;;;;. .:.....::::;+;;;;;+X$$$  
-  ::::::::::::::::::::;+$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$&&$xX&&Xx&&&&x. .:;:;;+xXX;::::;;+x+xX$$X+::;+x;:;;+++x$$&$X+  
-  :::::::::::::::::::::;+$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$&&&&&&&&$$$&$$&&&x..+$+:;+++x; ..;xx;.:++;+++::;;::;+x$$&&&&$Xx  
-  ::::::::::.::+xXXx+;;+$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$XXXXXx;+X$&&Xxx$+.  .:xx;   ..    :;+;.:;Xx;..;$&&&&&&&&&  
-  :::::::.:::::+X$$$$$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$&&XxX&&$$&&&$XXX$$$$$XXx;:::.:x+.  .;xXXx;:.    .;xX+::;X&&&&&&&&&  
-  ............:::+X$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$&$$$$+;+X$x+;:;;;::;xXxXXx;:;x.    ;X+::;X&&&&&&&&&  
-  .............:+$$$$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$$Xx++++xxxxXX$$$Xx+: .:+;:..:+xxX$;..;;:;;...:+$&&&&&&&  
-  ............;X$$$x+x&&&$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$&&&&&$$$Xx+;;;:;:::::;+++:+Xx+;:...::..+XX+;;:  .:;+x&&&&&&&  
-  ...........:+$$X;:;x&&$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$&&&&&$$$XXx+;:......:;xX$$$$XXx+;:.;;+XX;  :.:+XX$&&&&&&  
-  ...........:;;;::::+$&$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$$$&&&&&&$$$$Xx;:...    ..;+xX$$X;..:+xxxx+++:.:xX&&&&&&&  
-  ............:::::.:+$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$$XXXXX$$&&$$$$$Xx+;:..       ..:;;++x+...;xXx;..+$&&&&&&&  
-  ...................:+$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$Xxx;;;+x$$$$$$$Xx++;::...........::;xXX$Xx;+x++x$&&&&&&&&  
-  ...................:::;;++$&&&&&&&&&&&&&&&&&&&&&$$$&&&&&&&&$$$Xx+++++xX$$$$$$XXx++;;:;;;:::....:::;xX$$x+;:;x$&&&&&&&&  
-  ...................:::;;+X$&&&&&&&&&&&&&&&&&$$$$$$$$$&&&&&&&&&$$X$$$XXX$$$$$$$XXx+;;;;;;;;;+;;;;;:::;+X$$$x;+$&&&&&&&&  
-  ::::.........::::::::;+X$&&&&&&&&&&&&&&&&&&&$$$$$$$$$$$$$$$$&&$$$$$$$$$$$$$$$$$$Xx+;;;++xXXX$$$Xxx+;;;;x$&$X$&&&&&&&&&  
-  ::::::::...:::::;X$$$$&&$$$$&&&&&&&&&&&&&&&$$$$$$$$$$$$$$$$$XXXXxx$$$$$$$$$$$$$$XXxxxxxXX$$$$$$$$$$XXxxxX$XxX&&&&&&&&&  
-  ::::::::.....::::+x$$$X+;;$&&&&&&&&&&&&&&&&$$$$$$$XXXXX$$$XXXx++;;;+xXX$$$$$$$$XxxxXX$$$$$$$$$$$$$$$$$XXX$$XX&&&&&&&&&  
-  :;;::::::::::::::::::::.:+$&&&&&&&&&&&&&&&&&$$$$$XXxx+++xxX$Xx+;::::;+xxXXX$$Xx;::;xX$$$$$$$Xx+++++xXXXX$$&&&&&&&&&&&&  
-  ++++++++++;;::::::::...::+$$&&&&&&&&&&&&&&&&$$$$XXxxx++;;;+xxx++;;;;;;;;;+xXXx+:..;+xXX$$$$$$Xx++;;+xxxX$&&&&&&&&&&&&&  
-  x++++++++++;:::::::::..::+$$$$&&&&&&&&&&&&&&&$$$$XXxxx+;;;::........::;++xxXxx;:.:;++xX$$$$$$$$$$XXxxxxx$&&&&&&&&&&&&&  
-  xxxxxx+x+++;:::::::::....:x$$$&&&&&&&&&&&&&&&&&$$$$XXxx+;;:..     ..:;+xxxxx++:..:;;;;+xXX$$$$$$$$$$$$Xx$&&&&&&&&&&$&&  
-  xxxx++x++++;::::::::::....:+X$&&&&&&&&&&&&&&&&&&$$$$XXxx+;;:......:;+xxxxxx++;:..:;;;;;;;++++xXX$$$$&$$X$$&&&&&&&&&&&&  
-  +++++++++++;::::::...........:X&&&&&&&&&&&&&&&&&&$$$$XXx++;;;+++xxxxxxxXxx+;;:...:;;;:::;;++++++xxXXXXXXXx;;+xX&&&&$X+  
-  ++++++x++++;::::................+$&&&&&&&&&&&&&&&&$$$XXxx+++++xxxxxx++++++;:.....:;;;;:...;+xx++++++xxx+:....::+$$$+::  
-  +++++++++++;::......         .....X&&&&&&&&&&&&&&&$$$$XXxxxxxxXXXXXx+;;;;;;:.   .:;;;;:.....;+xxxxxxXx+:::::.::::::::;  
-  +++++++++++;:...... ..     .  .....+&&&&&&&&&&&&&&$$$$XXxxxxX$$$$$$XXx+++;;:.    .:;;;;:..    .::;;+xx+::::::.:.....:x  
-  +++++++++++;.......:;.     :;:......$&&&&&&&&&&&&&$$$XXXXxxxX$$$$$$$$$$$XXx+;:....::;;;;::... ...:;;++;::::::..::..:+X  
-  +++++++++++;........         ..:....;&&&&&&&&&&&&&$$XXXXXXXX$$$$$$&&&&&$$$$Xx+;;;:::::;;;;;::..:::;+++;::::.......:+$$  
-  +++++++++++:.  ...+$+       xx......;&&&&&&&&&&&$$$XX$$$$$$$$$$$$$$$$&&&&$$$$Xxxxx++;;;;+++;:::::;++++::.........:+$$x  
-  +++++++++++:    .+&&&:     &$&X.....+&&&&&&&&&&&$$$$$$$$$$$$$$$$$$$$$$$$$Xxx$$$$$$$$Xx;;;xx+;;;;;++++;:..........;X$X:  
-  ++++++++++;     ..+X+......:XX:....:$&&&&&&&&&&$$X$$$$$$$$$$$$XXXXxx++;++xxXXXX$$$$Xx+;:;+xx++++++++;::::.......:x$$+:  
-  ++++++++++;     ..................:$&&&&&&&&&&&$$$$$$$$&&&&$$$$$XXx+++;;::::;+xXXXXx+;;;;+XXx+++xx++;++;:.......:+x+:.  
-  +++++++++++:   :::..;XXXXX$x....:+$&&&&&&&&&&&&$$$$$$$$&&&&&$$$$$$$Xxx++;;;;;;+xxXXXXx++++XXxxxXx+::x$$X;:......:::...  
-  +++++++++++;;::::::::::::::::::+$&&&&&&&&&&&&&&$$$$$$$$$$$$$$Xxx+++++++++xx+++;+++xxXXxx++XXXXxX$X+;X$$X+;:...........  
-  +++++++++++;:::..:::;::::::::;$&&&&&&&&&&&&&&&&&$$$$$$$$$$$$$$XX+;:.....:;+xxxxxxxXXXXXxxxX$XX+::;+X$$$X+;:...........  
-  +++++++++++;;::..:::.........+$&&&&&&&&&&&&&&&&&&&$$$$$$$$$$$$$$$Xx;:..   ..:;+xXX$$$XXXxXXXXx+;;+X$$$$Xx+::..........  
-  +++++++++++;;:...:::.........;$&&&&&&&&&&&&&&&&&&&&&&$$$$$$$$$$$$$$Xx+;;:::.:::;+X$$$$XXXXXX++xx+;x$$$$XXx;;:.........  
-  +++++++++++;:::..:::.........;$&&&&&&&&&&&&&&&&&&&&&&$$$$$$$$$$$$$$$$$XXxx+++++x+xxX$XXXxXXx+xXx::+$$$$$XXx;;::.......  
-  +++++++++++;;:...::::........;$&&&&&&&&&&&&&&&&&&&&&&&$$$$$$$$$$$$$$$$$$$$$$$$XXXxxxXXXXXXX$$&&X;;x$$$$$$$Xx+;:::.....  
-  +++++++++++;;:...:::.........;$&&&&&&&&&&&&&&&&&&&&&&&&$&$$$$$XXxxxxXXX$$$$$$$XXXxxxxXXX$$$&&&&$;;x$$$$$$$$Xx+;::.....  
-  +++++++++++;;::..:::........;X&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$XXxx++;++xxxxXXXXXXxxxXX$$$$&&&&&$;;x$$$$$$$$Xx++:...::;  
-  +++++++++++;;::..:::...::;+X$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$XXXXxxx+xxxxXXXXXX$$$$$$$$&&&&&$;;x$$$$$$$$Xxxx+;++xxX  
-  +++++++++++;;::....:;x$$$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$XXXXXXXXX$$$$$$$X$$$&&&&&$xX$$$$$$$$$$XXXXXXXXXX  
-  ;;;;;++++++++;;;;;+X$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$XXXXXX$$$$$Xx+xX$$$$$$XxX$$$$$$$$$$$$XXXXXXXX  
-  +++xxxXXXX$$$$$$$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$$$$$$$$x++xXXXXXXxxxXX$$$$$$$$XXXXXXXxxx  
-  $$$$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$$$$$x;:;xXXXX$$$XXXX$XXXXXXXXXXxxxxxx  
-  $$$$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$$$$$$$X+:.:+xXXXXXXXXXXXXXXXXXXXXxxxxxxx  
-                                                                                                                          
-                                                                                                                          
-    ██████  ██            ███████ ██     ██  █████  ██████  ███    ███ 
-    ██   ██ ██            ██      ██     ██ ██   ██ ██   ██ ████  ████ 
-    ██████  ██      █████ ███████ ██  █  ██ ███████ ██████  ██ ████ ██ 
-    ██   ██ ██                 ██ ██ ███ ██ ██   ██ ██   ██ ██  ██  ██ 
-    ██   ██ ███████       ███████  ███ ███  ██   ██ ██   ██ ██      ██ 
-    
-    From Gensyn Ambanode
-EOF
+[ "$(uname)" = "Darwin" ] && sed -i '' -e 's/bootstrap_timeout: Optional\[float\] = None/bootstrap_timeout: float = 120/' -e 's/p2p = await P2P.create(\*\*kwargs)/p2p = await P2P.create(bootstrap_timeout=120, **kwargs)/' $(python3 -c 'import hivemind.dht.node as m; print(m.__file__)') || sed -i -e 's/bootstrap_timeout: Optional\[float\] = None/bootstrap_timeout: float = 120/' -e 's/p2p = await P2P.create(\*\*kwargs)/p2p = await P2P.create(bootstrap_timeout=120, **kwargs)/' $(python3 -c 'import hivemind.dht.node as m; print(m.__file__)')
 
 
 if [ -n "$ORG_ID" ]; then
