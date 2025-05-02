@@ -5,5 +5,5 @@ hf-transfer
 peft
 tensorboard
 transformers>=4.46.0
-trl
+trl==0.15.2
 web3
