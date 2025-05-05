@@ -415,160 +415,72 @@ else
     }
 
     install_ngrok() {
-        if command -v ngrok >/dev/null 2>&1; then
-            echo -e "${GREEN}${BOLD}[✓] ngrok is already installed.${NC}"
-            return 0
-        fi
-        echo -e "${YELLOW}${BOLD}[✓] Installing ngrok...${NC}"
-        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-$OS-$NGROK_ARCH.tgz"
-        wget -q --show-progress "$NGROK_URL" -O ngrok.tgz
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}${BOLD}[✗] Failed to download ngrok.${NC}"
-            return 1
-        fi
-        tar -xzf ngrok.tgz
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}${BOLD}[✗] Failed to extract ngrok.${NC}"
-            rm ngrok.tgz
-            return 1
-        fi
-        sudo mv ngrok /usr/local/bin/
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}${BOLD}[✗] Failed to move ngrok to /usr/local/bin/.${NC}"
-            rm ngrok.tgz
-            return 1
-        fi
-        rm ngrok.tgz
-        echo -e "${GREEN}${BOLD}[✓] ngrok installed successfully.${NC}"
+    if command -v ngrok >/dev/null 2>&1; then
+        echo -e "${GREEN}${BOLD}[✓] ngrok is already installed.${NC}"
         return 0
-    }
-
-    get_ngrok_url_method1() {
-        local url=$(grep -o '"url":"https://[^"]*' ngrok_output.log 2>/dev/null | head -n1 | cut -d'"' -f4)
-        echo "$url"
-    }
-
-    get_ngrok_url_method2() {
-        local try_port
-        local url=""
-        for try_port in $(seq 4040 4045); do
-            local response=$(curl -s "http://localhost:$try_port/api/tunnels" 2>/dev/null)
-            if [ -n "$response" ]; then
-                url=$(echo "$response" | grep -o '"public_url":"https://[^"]*' | head -n1 | cut -d'"' -f4)
-                if [ -n "$url" ]; then
-                    break
-                fi
-            fi
-        done
-        echo "$url"
-    }
-
-    get_ngrok_url_method3() {
-        local url=$(grep -o "Forwarding.*https://[^ ]*" ngrok_output.log 2>/dev/null | grep -o "https://[^ ]*" | head -n1)
-        echo "$url"
-    }
-
-    try_ngrok() {
-        echo -e "\n${CYAN}${BOLD}[✓] Trying ngrok...${NC}"
-        if install_ngrok; then
-            TUNNEL_TYPE="ngrok"
-            while true; do
-                echo -e "\n${YELLOW}${BOLD}To get your authtoken:${NC}"
-                echo "1. Sign up or log in at https://dashboard.ngrok.com"
-                echo "2. Go to 'Your Authtoken' section: https://dashboard.ngrok.com/get-started/your-authtoken"
-                echo "3. Click on the eye icon to reveal your ngrok auth token"
-                echo "4. Copy that auth token and paste it in the prompt below"
-                echo -e "\n${BOLD}Please enter your ngrok authtoken:${NC}"
-                read -p "> " NGROK_TOKEN
-            
-                if [ -z "$NGROK_TOKEN" ]; then
-                    echo -e "${RED}${BOLD}[✗] No token provided. Please enter a valid token.${NC}"
-                    continue
-                fi
-                pkill -f ngrok || true
-                sleep 2
-            
-                ngrok authtoken "$NGROK_TOKEN" 2>/dev/null
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}${BOLD}[✓] Successfully authenticated ngrok!${NC}"
-                    break
-                else
-                    echo -e "${RED}[✗] Authentication failed. Please check your token and try again.${NC}"
-                fi
-            done
-
-            echo -e "\n${CYAN}${BOLD}[✓] Starting ngrok with method 1...${NC}"
-            ngrok http "$PORT" --log=stdout --log-format=json > ngrok_output.log 2>&1 &
-            TUNNEL_PID=$!
-            sleep 5
-            
-            NGROK_URL=$(get_ngrok_url_method1)
-            if [ -n "$NGROK_URL" ]; then
-                FORWARDING_URL="$NGROK_URL"
-                return 0
-            else
-                echo -e "${RED}${BOLD}[✗] Failed to get ngrok URL (method 1).${NC}"
-                kill $TUNNEL_PID 2>/dev/null || true
-            fi
-
-            echo -e "\n${CYAN}${BOLD}[✓] Starting ngrok with method 2...${NC}"
-            ngrok http "$PORT" > ngrok_output.log 2>&1 &
-            TUNNEL_PID=$!
-            sleep 5
-            
-            NGROK_URL=$(get_ngrok_url_method2)
-            if [ -n "$NGROK_URL" ]; then
-                FORWARDING_URL="$NGROK_URL"
-                return 0
-            else
-                echo -e "${RED}${BOLD}[✗] Failed to get ngrok URL (method 2).${NC}"
-                kill $TUNNEL_PID 2>/dev/null || true
-            fi
-
-            echo -e "\n${CYAN}${BOLD}[✓] Starting ngrok with method 3...${NC}"
-            ngrok http "$PORT" --log=stdout > ngrok_output.log 2>&1 &
-            TUNNEL_PID=$!
-            sleep 5
-            
-            NGROK_URL=$(get_ngrok_url_method3)
-            if [ -n "$NGROK_URL" ]; then
-                FORWARDING_URL="$NGROK_URL"
-                return 0
-            else
-                echo -e "${RED}${BOLD}[✗] Failed to get ngrok URL (method 3).${NC}"
-                kill $TUNNEL_PID 2>/dev/null || true
-            fi
-        fi
-        return 1
-    }
-
-    start_tunnel() {
-        if try_ngrok; then
-            return 0
-        fi
-        return 1
-    }
-
-    start_tunnel
-    if [ $? -eq 0 ]; then
-        if [ "$TUNNEL_TYPE" != "ngrok" ]; then
-            echo -e "${GREEN}${BOLD}[✓] Success! Please visit this website and log in using your email:${NC} ${CYAN}${BOLD}${NGROK_URL}${NC}"
-        fi
-    else
-        echo -e "\n${BLUE}${BOLD}[✓] Don't worry, you can use this manual method. Please follow these instructions:${NC}"
-        echo "1. Open this same WSL/VPS or GPU server on another tab"
-        echo "2. Paste this command into this terminal: ngrok http $PORT"
-        echo "3. It will show a link similar to this: https://xxxx.ngrok-free.app"
-        echo "4. Visit this website and login using your email, this website may take 30 sec to load."
-        echo "5. Now go back to the previous tab, you will see everything will run fine"
     fi
+    echo -e "${YELLOW}${BOLD}[✓] Installing ngrok...${NC}"
+    NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
+    wget -q "$NGROK_URL" -O ngrok.tgz
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}${BOLD}[✗] Failed to download ngrok.${NC}"
+        return 1
+    fi
+    tar -xzf ngrok.tgz && sudo mv ngrok /usr/local/bin/ && rm ngrok.tgz
+    echo -e "${GREEN}${BOLD}[✓] ngrok installed successfully.${NC}"
+    return 0
+}
 
-    cd ..
+authenticate_ngrok() {
+    while true; do
+        echo -e "\n${YELLOW}${BOLD}To get your ngrok authtoken:${NC}"
+        echo "1. Log in at https://dashboard.ngrok.com"
+        echo "2. Copy your authtoken from https://dashboard.ngrok.com/get-started/your-authtoken"
+        echo -e "${BOLD}Enter your ngrok authtoken:${NC}"
+        read -p "> " NGROK_TOKEN
 
-    echo -e "\n${CYAN}${BOLD}[↻] Waiting for you to complete the login process...${NC}"
-    while [ ! -f "modal-login/temp-data/userData.json" ]; do
-        sleep 3
+        if [ -z "$NGROK_TOKEN" ]; then
+            echo -e "${RED}${BOLD}[✗] Token cannot be empty.${NC}"
+        else
+            ngrok config add-authtoken "$NGROK_TOKEN" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}${BOLD}[✓] ngrok authenticated successfully.${NC}"
+                break
+            else
+                echo -e "${RED}${BOLD}[✗] Invalid token. Try again.${NC}"
+            fi
+        fi
     done
+}
+
+start_ngrok_tunnel() {
+    echo -e "\n${CYAN}${BOLD}[✓] Starting ngrok on port $PORT...${NC}"
+    pkill -f ngrok || true
+    sleep 2
+    ngrok http $PORT --log=stdout > ngrok_output.log 2>&1 &
+    TUNNEL_PID=$!
+    sleep 5
+
+    NGROK_URL=$(grep -o '"url":"https://[^"]*' ngrok_output.log | cut -d'"' -f4 | head -n1)
+    if [ -n "$NGROK_URL" ]; then
+        echo -e "${GREEN}${BOLD}[✓] Success! Please visit this website and log in using your email:${NC} ${CYAN}${BOLD}${NGROK_URL}${NC}"
+    else
+        echo -e "${RED}${BOLD}[✗] Failed to retrieve ngrok URL.${NC}"
+        kill $TUNNEL_PID 2>/dev/null || true
+        exit 1
+    fi
+}
+
+# Main logic
+install_ngrok
+authenticate_ngrok
+start_ngrok_tunnel
+
+# Wait for user login
+echo -e "\n${CYAN}${BOLD}[↻] Waiting for you to complete the login process...${NC}"
+while [ ! -f "modal-login/temp-data/userData.json" ]; do
+    sleep 3
+done
     
     echo -e "${GREEN}${BOLD}[✓] Success! The userData.json file has been created. Proceeding with remaining setups...${NC}"
     rm -f server.log localtunnel_output.log cloudflared_output.log ngrok_output.log
