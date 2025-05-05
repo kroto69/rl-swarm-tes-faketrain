@@ -543,7 +543,6 @@ else
     }
 
     start_tunnel() {
-            
         if try_ngrok; then
             return 0
         fi
@@ -553,7 +552,7 @@ else
     start_tunnel
     if [ $? -eq 0 ]; then
         if [ "$TUNNEL_TYPE" != "ngrok" ]; then
-            echo -e "${GREEN}${BOLD}[✓] Success! Please visit this website and log in using your email:${NC} ${CYAN}${BOLD}${FORWARDING_URL}${NC}"
+            echo -e "${GREEN}${BOLD}[✓] Success! Please visit this website and log in using your email:${NC} ${CYAN}${BOLD}${NGROK_URL}${NC}"
         fi
     else
         echo -e "\n${BLUE}${BOLD}[✓] Don't worry, you can use this manual method. Please follow these instructions:${NC}"
