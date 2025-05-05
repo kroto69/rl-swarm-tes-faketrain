@@ -414,44 +414,6 @@ else
         return 1
     }
 
-    install_localtunnel() {
-        if command -v lt >/dev/null 2>&1; then
-            echo -e "${GREEN}${BOLD}[✓] Localtunnel is already installed.${NC}"
-            return 0
-        fi
-        echo -e "\n${CYAN}${BOLD}[✓] Installing localtunnel...${NC}"
-        npm install -g localtunnel > /dev/null 2>&1
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}${BOLD}[✓] Localtunnel installed successfully.${NC}"
-            return 0
-        else
-            echo -e "${RED}${BOLD}[✗] Failed to install localtunnel.${NC}"
-            return 1
-        fi
-    }
-
-    install_cloudflared() {
-        if command -v cloudflared >/dev/null 2>&1; then
-            echo -e "${GREEN}${BOLD}[✓] Cloudflared is already installed.${NC}"
-            return 0
-        fi
-        echo -e "\n${YELLOW}${BOLD}[✓] Installing cloudflared...${NC}"
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$CF_ARCH"
-        wget -q --show-progress "$CF_URL" -O cloudflared
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}${BOLD}[✗] Failed to download cloudflared.${NC}"
-            return 1
-        fi
-        chmod +x cloudflared
-        sudo mv cloudflared /usr/local/bin/
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}${BOLD}[✗] Failed to move cloudflared to /usr/local/bin/.${NC}"
-            return 1
-        fi
-        echo -e "${GREEN}${BOLD}[✓] Cloudflared installed successfully.${NC}"
-        return 0
-    }
-
     install_ngrok() {
         if command -v ngrok >/dev/null 2>&1; then
             echo -e "${GREEN}${BOLD}[✓] ngrok is already installed.${NC}"
@@ -479,62 +441,6 @@ else
         rm ngrok.tgz
         echo -e "${GREEN}${BOLD}[✓] ngrok installed successfully.${NC}"
         return 0
-    }
-
-    try_localtunnel() {
-        echo -e "\n${CYAN}${BOLD}[✓] Trying localtunnel...${NC}"
-        if install_localtunnel; then
-            echo -e "\n${CYAN}${BOLD}[✓] Starting localtunnel on port $PORT...${NC}"
-            TUNNEL_TYPE="localtunnel"
-            lt --port $PORT > localtunnel_output.log 2>&1 &
-            TUNNEL_PID=$!
-            
-            sleep 5
-            URL=$(grep -o "https://[^ ]*" localtunnel_output.log | head -n1)
-            
-            if [ -n "$URL" ]; then
-                PASS=$(curl -s https://loca.lt/mytunnelpassword)
-                FORWARDING_URL="$URL"
-                echo -e "${GREEN}${BOLD}[✓] Success! Please visit this website : ${YELLOW}${BOLD}${URL}${GREEN}${BOLD} and then enter this password : ${YELLOW}${BOLD}${PASS}${GREEN}${BOLD} to access the website and then log in using your email.${NC}"
-                return 0
-            else
-                echo -e "${RED}${BOLD}[✗] Failed to get localtunnel URL.${NC}"
-                kill $TUNNEL_PID 2>/dev/null || true
-            fi
-        fi
-        return 1
-    }
-
-    try_cloudflared() {
-        echo -e "\n${CYAN}${BOLD}[✓] Trying cloudflared...${NC}"
-        if install_cloudflared; then
-            echo -e "\n${CYAN}${BOLD}[✓] Starting cloudflared tunnel...${NC}"
-            TUNNEL_TYPE="cloudflared"
-            cloudflared tunnel --url http://localhost:$PORT > cloudflared_output.log 2>&1 &
-            TUNNEL_PID=$!
-            
-            counter=0
-            MAX_WAIT=10
-            while [ $counter -lt $MAX_WAIT ]; do
-                CLOUDFLARED_URL=$(grep -o 'https://[^ ]*\.trycloudflare.com' cloudflared_output.log | head -n1)
-                if [ -n "$CLOUDFLARED_URL" ]; then
-                    echo -e "${GREEN}${BOLD}[✓] Cloudflared tunnel is started successfully.${NC}"
-                    echo -e "\n${CYAN}${BOLD}[✓] Checking if cloudflared URL is working...${NC}"
-                    if check_url "$CLOUDFLARED_URL"; then
-                        FORWARDING_URL="$CLOUDFLARED_URL"
-                        return 0
-                    else
-                        echo -e "${RED}${BOLD}[✗] Cloudflared URL is not accessible.${NC}"
-                        kill $TUNNEL_PID 2>/dev/null || true
-                        break
-                    fi
-                fi
-                sleep 1
-                counter=$((counter + 1))
-            done
-            kill $TUNNEL_PID 2>/dev/null || true
-        fi
-        return 1
     }
 
     get_ngrok_url_method1() {
@@ -637,14 +543,7 @@ else
     }
 
     start_tunnel() {
-        if try_localtunnel; then
-            return 0
-        fi
-        
-        if try_cloudflared; then
-            return 0
-        fi
-        
+            
         if try_ngrok; then
             return 0
         fi
@@ -653,7 +552,7 @@ else
 
     start_tunnel
     if [ $? -eq 0 ]; then
-        if [ "$TUNNEL_TYPE" != "localtunnel" ]; then
+        if [ "$TUNNEL_TYPE" != "ngrok" ]; then
             echo -e "${GREEN}${BOLD}[✓] Success! Please visit this website and log in using your email:${NC} ${CYAN}${BOLD}${FORWARDING_URL}${NC}"
         fi
     else
@@ -751,6 +650,10 @@ else
 fi
 
 echo -e "\n${GREEN}${BOLD}[✓] Good luck in the swarm! Your training session is about to begin.\n${NC}"
+[ "$(uname)" = "Darwin" ] && sed -i '' -E -e 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' -e '/startup_timeout: float = 120,/a\'$'\n''    bootstrap_timeout: float = 120,' -e '/anonymous_p2p = await cls\.create\(/a\'$'\n''        bootstrap_timeout=120,' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)") || sed -i -E -e 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' -e '/startup_timeout: float = 120,/a\    bootstrap_timeout: float = 120,' -e '/anonymous_p2p = await cls\.create\(/a\        bootstrap_timeout=120,' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)")
+
+[ "$(uname)" = "Darwin" ] && sed -i '' -e 's/bootstrap_timeout: Optional\[float\] = None/bootstrap_timeout: float = 120/' -e 's/p2p = await P2P.create(\*\*kwargs)/p2p = await P2P.create(bootstrap_timeout=120, **kwargs)/' $(python3 -c 'import hivemind.dht.node as m; print(m.__file__)') || sed -i -e 's/bootstrap_timeout: Optional\[float\] = None/bootstrap_timeout: float = 120/' -e 's/p2p = await P2P.create(\*\*kwargs)/p2p = await P2P.create(bootstrap_timeout=120, **kwargs)/' $(python3 -c 'import hivemind.dht.node as m; print(m.__file__)')
+
 echo -e "\033[38;5;224m"
 cat << "EOF"
 
