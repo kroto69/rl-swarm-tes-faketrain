@@ -4,6 +4,6 @@ hivemind @ git+https://github.com/learning-at-home/hivemind@1.11.11
 hf-transfer
 peft
 tensorboard
-transformers>=4.46.0
-trl==0.15.2
+transformers>=4.52.2
+trl
 web3
