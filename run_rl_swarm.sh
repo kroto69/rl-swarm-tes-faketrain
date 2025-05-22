@@ -19,15 +19,20 @@ export ORG_ID
 export HF_HUB_DOWNLOAD_TIMEOUT=120
 export TUNNEL_TYPE=""
 
+# Check if public multi-address is given else set to default
 DEFAULT_PUB_MULTI_ADDRS=""
 PUB_MULTI_ADDRS=${PUB_MULTI_ADDRS:-$DEFAULT_PUB_MULTI_ADDRS}
 
-DEFAULT_PEER_MULTI_ADDRS="/ip4/38.101.215.13/tcp/30002/p2p/QmQ2gEXoPJg6iMBSUFWGzAabS2VhnzuS782Y637hGjfsRJ"
+# Check if peer multi-address is given else set to default
+DEFAULT_PEER_MULTI_ADDRS="/ip4/38.101.215.13/tcp/30002/p2p/QmQ2gEXoPJg6iMBSUFWGzAabS2VhnzuS782Y637hGjfsRJ" # gensyn coordinator node
 PEER_MULTI_ADDRS=${PEER_MULTI_ADDRS:-$DEFAULT_PEER_MULTI_ADDRS}
 
+# Check if host multi-address is given else set to default
 DEFAULT_HOST_MULTI_ADDRS="/ip4/0.0.0.0/tcp/38331"
 HOST_MULTI_ADDRS=${HOST_MULTI_ADDRS:-$DEFAULT_HOST_MULTI_ADDRS}
 
+# Path to an RSA private key. If this path does not exist, a new key pair will be created.
+# Remove this file if you want a new PeerID.
 DEFAULT_IDENTITY_PATH="$ROOT"/swarm.pem
 IDENTITY_PATH=${IDENTITY_PATH:-$DEFAULT_IDENTITY_PATH}
 
@@ -696,6 +701,27 @@ else
     esac
 fi
 
+echo -e "\n${CYAN}${BOLD}This is your preferred ENV for this training session :\n${NC}"
+
+print_env() {
+    local name=$1
+    local value=${!name}
+    value=${value:-"Not Available"}
+    echo -e "+ ${PURPLE}${BOLD}${name}${NC} : ${value}"
+}
+
+print_env "HF_TOKEN"
+print_env "ORG_ID"
+print_env "IDENTITY_PATH"
+print_env "SWARM_CONTRACT"
+print_env "CONFIG_PATH"
+print_env "GAME"
+print_env "PUB_MULTI_ADDRS"
+print_env "PEER_MULTI_ADDRS"
+print_env "HOST_MULTI_ADDRS"
+
+sleep 5
+
 echo -e "\n${GREEN}${BOLD}[✓] Good luck in the swarm! Your training session is about to begin.\n${NC}"
 echo -e "\033[38;5;224m"
 cat << "EOF"
@@ -777,6 +803,8 @@ cat << "EOF"
 EOF
 
 
+[ "$(uname)" = "Darwin" ] && sed -i '' -E 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)") || sed -i -E 's/(startup_timeout: *float *= *)[0-9.]+/\1120/' $(python3 -c "import hivemind.p2p.p2p_daemon as m; print(m.__file__)")
+[ "$(uname)" = "Darwin" ] && sed -i '' -e '/bootstrap_timeout: Optional\[float\] = None/s//bootstrap_timeout: float = 120/' $(python3 -c 'import hivemind.dht.node as m; print(m.__file__)') || sed -i -e '/bootstrap_timeout: Optional\[float\] = None/s//bootstrap_timeout: float = 120/' $(python3 -c 'import hivemind.dht.node as m; print(m.__file__)')
 if [ -n "$ORG_ID" ]; then
     python -m hivemind_exp.gsm8k.train_single_gpu \
         --hf_token "$HUGGINGFACE_ACCESS_TOKEN" \
